@@ -26,6 +26,7 @@ import uptane.clients.primary as primary
 import uptane.encoding.asn1_codec as asn1_codec
 from uptane import GREEN, RED, YELLOW, ENDCOLORS
 from demo.uptane_banners import *
+import tuf.asn1_codec as asn1_codec_tuf
 import tuf.keys
 import tuf.repository_tool as rt
 import tuf.client.updater
@@ -33,6 +34,7 @@ import json
 import canonicaljson
 import atexit
 
+import hashlib
 import os # For paths and makedirs
 import shutil # For copyfile
 import threading # for the demo listener
@@ -46,7 +48,6 @@ import socket # to catch listening failures from six's xmlrpc server
 # Allow tab completion in the interactive Python shell.
 import readline, rlcompleter
 readline.parse_and_bind('tab: complete')
-
 
 # Tell the reference implementation that we're in demo mode:
 # When True, the reference implementation's primary.py code displays banners
@@ -655,6 +656,63 @@ def listen():
   print('Primary will now listen on port ' + str(successful_port))
   server.serve_forever()
 
+
+
+def ATTACK_send_corrupt_metadata_to_secondary():
+  """
+  Attack: MITM w/o keys modifies metadata form the Director and Image Repo
+  Modify the metadata which is sent from primary to the secondary ecu
+  """
+
+  # Get the directory where the metadata is stored
+  metadata_fname = primary_ecu.get_full_metadata_archive_fname()
+  metadata_dirname = os.path.dirname(metadata_fname)
+
+  # Read the targets metadata of the director
+  to_modify_metadata_fname = metadata_dirname + '/director/current/targets.der'
+  to_modify_metadata = open(to_modify_metadata_fname, 'rb')
+  to_modify_metadata_der = to_modify_metadata.read()
+  to_modify_metadata.close()
+
+  # Convert the metadata in DER format to json,
+  # modify it, then convert it back to DER format
+  # (Its easier to make mofidifications in json)
+  to_modify_metadata_json = asn1_codec_tuf.convert_signed_der_to_dersigned_json(to_modify_metadata_der)
+  print(to_modify_metadata_json)
+  to_modify_metadata_json['signed']['version'] = 1
+  modified_metadata_der = asn1_codec_tuf.convert_signed_metadata_to_der(to_modify_metadata_json)
+
+  # Backup the original metadata file and then
+  # write the modified metadata to the targets.der file
+  shutil.move(to_modify_metadata_fname, metadata_dirname + 'targets.der.backup')
+  with open(to_modify_metadata_fname, 'wb') as modified_metadata:
+    modified_metadata.write(modified_metadata_der)
+
+  # Generate the full_metadata_archive, which would be
+  # downloaded by the secondary during the update cycle
+  primary_ecu.save_distributable_metadata_files()
+
+
+
+
+
+def undo_ATTACK_send_corrupt_metadata_to_secondary():
+  """
+  undo_ATTACK: It reverse the effects of the attack and restores
+  the orginal metadata file and generate the archive again
+  """
+
+  # Get the directory where the modified and backup metadata is stored
+  metadata_fname = primary_ecu.get_full_metadata_archive_fname()
+  metadata_dirname = os.path.dirname(metadata_fname)
+  modified_metadata_fname = metadata_dirname + '/director/current/targets.der'
+
+  # Restore the original metadata file from the backup
+  shutil.move( metadata_dirname + 'targets.der.backup', modified_metadata_fname)
+
+  # Generate the full_metadata_archive, which would be
+  # downloaded by the secondary during the update cycle
+  primary_ecu.save_distributable_metadata_files()
 
 
 
